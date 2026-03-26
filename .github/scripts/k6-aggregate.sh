@@ -17,10 +17,23 @@ TOTAL_DURATION=0
 
 for f in $FILES; do
 
-  REQS=$(jq -r '.metrics.http_reqs.values.count // 0' "$f" | tr -d '\n')
-  FAIL_RATE=$(jq -r '.metrics.failed_requests.values.rate // 0' "$f" | tr -d '\n')
-  P95=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 0' "$f" | tr -d '\n')
-  AVG=$(jq -r '.metrics.http_req_duration.values.avg // 0' "$f" | tr -d '\n')
+  # Clean single values
+  REQS=$(jq -r '.metrics.http_reqs.values.count // 0' "$f" | head -n1 | tr -d '[:space:]')
+  FAIL_RATE=$(jq -r '.metrics.failed_requests.values.rate // 0' "$f" | head -n1 | tr -d '[:space:]')
+  P95=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 0' "$f" | head -n1 | tr -d '[:space:]')
+  AVG=$(jq -r '.metrics.http_req_duration.values.avg // 0' "$f" | head -n1 | tr -d '[:space:]')
+
+  # Fallback safety
+  REQS=${REQS:-0}
+  FAIL_RATE=${FAIL_RATE:-0}
+  P95=${P95:-0}
+  AVG=${AVG:-0}
+
+  # Ensure numeric only
+  REQS=$(echo "$REQS" | grep -Eo '[0-9.]+' | head -n1)
+  FAIL_RATE=$(echo "$FAIL_RATE" | grep -Eo '[0-9.]+' | head -n1)
+  P95=$(echo "$P95" | grep -Eo '[0-9.]+' | head -n1)
+  AVG=$(echo "$AVG" | grep -Eo '[0-9.]+' | head -n1)
 
   REQS=${REQS:-0}
   FAIL_RATE=${FAIL_RATE:-0}
@@ -32,6 +45,7 @@ for f in $FILES; do
   REGION=$(echo "$NAME" | cut -d'-' -f2)
   INSTANCE=$(echo "$NAME" | cut -d'-' -f3 | cut -d'.' -f1)
 
+  # Safe math
   FAIL_REQS=$(echo "$REQS * $FAIL_RATE" | bc 2>/dev/null || echo 0)
 
   TOTAL_REQS=$(echo "$TOTAL_REQS + $REQS" | bc)
@@ -39,6 +53,7 @@ for f in $FILES; do
   TOTAL_DURATION=$(echo "$TOTAL_DURATION + ($REQS * $AVG)" | bc)
 
   echo "| $REGION | $INSTANCE | $REQS | $FAIL_RATE | $P95 | $AVG |" >> "$GITHUB_STEP_SUMMARY"
+
 done
 
 # Global metrics

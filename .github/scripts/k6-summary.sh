@@ -4,14 +4,26 @@ FILE=$1
 REGION=$2
 INSTANCE=$3
 
-REQS=$(jq -r '.metrics.http_reqs.values.count // 0' "$FILE" | tr -d '\n')
-FAIL_RATE=$(jq -r '.metrics.failed_requests.values.rate // 0' "$FILE" | tr -d '\n')
-P95=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 0' "$FILE" | tr -d '\n')
+# Extract clean single values
+REQS=$(jq -r '.metrics.http_reqs.values.count // 0' "$FILE" | head -n1 | tr -d '[:space:]')
+FAIL_RATE=$(jq -r '.metrics.failed_requests.values.rate // 0' "$FILE" | head -n1 | tr -d '[:space:]')
+P95=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 0' "$FILE" | head -n1 | tr -d '[:space:]')
+
+# Fallback safety
+REQS=${REQS:-0}
+FAIL_RATE=${FAIL_RATE:-0}
+P95=${P95:-0}
+
+# Ensure numeric only
+REQS=$(echo "$REQS" | grep -Eo '[0-9.]+' | head -n1)
+FAIL_RATE=$(echo "$FAIL_RATE" | grep -Eo '[0-9.]+' | head -n1)
+P95=$(echo "$P95" | grep -Eo '[0-9.]+' | head -n1)
 
 REQS=${REQS:-0}
 FAIL_RATE=${FAIL_RATE:-0}
 P95=${P95:-0}
 
+# Write clean table
 {
   echo "## k6 Load Test Summary"
   echo ""
