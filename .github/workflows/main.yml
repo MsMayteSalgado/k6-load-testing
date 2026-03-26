@@ -1,0 +1,123 @@
+name: k6 distributed test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Target URL (include trailing slash)"
+        required: false
+        default: "https://example.com/"
+
+      vus:
+        description: "Virtual users"
+        required: false
+        default: "50"
+
+      duration:
+        description: "Test duration (e.g. 30s, 2m)"
+        required: false
+        default: "30s"
+
+      regions:
+        description: "Comma-separated region labels"
+        required: false
+        default: "region-1"
+
+      instances:
+        description: "Comma-separated instance IDs"
+        required: false
+        default: "1"
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      regions_json: ${{ steps.set.outputs.regions }}
+      instances_json: ${{ steps.set.outputs.instances }}
+
+    steps:
+      - id: set
+        run: |
+          regions='["'$(echo "${{ github.event.inputs.regions || 'region-1' }}" | sed 's/,/","/g')'"]'
+          instances='["'$(echo "${{ github.event.inputs.instances || '1' }}" | sed 's/,/","/g')'"]'
+
+          echo "regions=$regions" >> $GITHUB_OUTPUT
+          echo "instances=$instances" >> $GITHUB_OUTPUT
+
+  load-test:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        region: ${{ fromJson(needs.prepare-matrix.outputs.regions_json) }}
+        instance: ${{ fromJson(needs.prepare-matrix.outputs.instances_json) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Make summary script executable
+        run: chmod +x .github/scripts/k6-summary.sh
+
+      - name: Get runner IP
+        run: |
+          IP=$(curl -sf https://api.ipify.org || echo "unknown")
+          echo "Runner IP: $IP | Region: ${{ matrix.region }} | Instance: ${{ matrix.instance }}"
+
+      - name: Install k6
+        run: |
+          K6_VER="v0.51.0"
+          curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VER}/k6-${K6_VER}-linux-amd64.tar.gz" | tar -xz
+          sudo mv "k6-${K6_VER}-linux-amd64/k6" /usr/local/bin/k6
+          k6 version
+
+      - name: Run k6 test
+        run: |
+          k6 run \
+            -e TARGET_URL=${{ github.event.inputs.target_url || 'https://example.com/' }} \
+            -e VUS=${{ github.event.inputs.vus || '50' }} \
+            -e DURATION=${{ github.event.inputs.duration || '30s' }} \
+            -e REGION=${{ matrix.region }} \
+            -e INSTANCE=${{ matrix.instance }} \
+            --out json=results-${{ matrix.region }}-${{ matrix.instance }}.json \
+            script.js
+
+      - name: Write job summary
+        run: |
+          FILE=results-${{ matrix.region }}-${{ matrix.instance }}.json
+          .github/scripts/k6-summary.sh "$FILE" "${{ matrix.region }}" "${{ matrix.instance }}"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results-${{ matrix.region }}-${{ matrix.instance }}
+          path: results-*.json
+
+  aggregate-summary:
+    needs: load-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: results
+
+      - name: Install jq and bc
+        run: sudo apt-get update && sudo apt-get install -y jq bc
+
+      - name: Make aggregate script executable
+        run: chmod +x .github/scripts/k6-aggregate.sh
+
+      - name: Run aggregation
+        run: |
+          .github/scripts/k6-aggregate.sh results
