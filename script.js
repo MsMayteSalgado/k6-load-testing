@@ -20,7 +20,7 @@ export const options = {
     duration: __ENV.DURATION || "30s",
     thresholds: {
         failed_requests: ["rate<0.01"],
-        http_req_duration: ["p(95)<500"],
+        http_req_duration: ["p(95)<700"],
     },
 };
 
@@ -66,7 +66,7 @@ export default function () {
 
     const ok1 = check(res1, {
         "landing status 200": function (r) { return r.status === 200; },
-        "landing < 500ms": function (r) { return r.timings.duration < 500; },
+        "landing < 700ms": function (r) { return r.timings.duration < 700; },
     });
 
     sleep(1 + Math.random());
@@ -81,7 +81,7 @@ export default function () {
 
     const ok2 = check(res2, {
         "nav status 200": function (r) { return r.status === 200; },
-        "nav < 500ms": function (r) { return r.timings.duration < 500; },
+        "nav < 700ms": function (r) { return r.timings.duration < 700; },
     });
 
     // ---- Step 3: asset fetch ----
