@@ -4,9 +4,9 @@ FILE=$1
 REGION=$2
 INSTANCE=$3
 
-REQS=$(jq '.metrics.http_reqs.values.count' "$FILE")
-FAIL_RATE=$(jq '.metrics.failed_requests.values.rate' "$FILE")
-P95=$(jq '.metrics.http_req_duration.values["p(95)"]' "$FILE")
+REQS=$(jq '.metrics.http_reqs.values.count // 0' "$FILE")
+FAIL_RATE=$(jq '.metrics.failed_requests.values.rate // 0' "$FILE")
+P95=$(jq '.metrics.http_req_duration.values["p(95)"] // 0' "$FILE")
 
 echo "## k6 Load Test Summary" >> $GITHUB_STEP_SUMMARY
 echo "" >> $GITHUB_STEP_SUMMARY

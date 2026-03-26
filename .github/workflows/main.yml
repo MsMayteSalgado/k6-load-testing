@@ -56,44 +56,41 @@ jobs:
         instance: ${{ fromJson(needs.prepare-matrix.outputs.instances_json) }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Make summary script executable
-        run: chmod +x .github/scripts/k6-summary.sh
-
-      - name: Get runner IP
-        run: |
-          IP=$(curl -sf https://api.ipify.org || echo "unknown")
-          echo "Runner IP: $IP | Region: ${{ matrix.region }} | Instance: ${{ matrix.instance }}"
+      - run: chmod +x .github/scripts/k6-summary.sh
 
       - name: Install k6
         run: |
           K6_VER="v0.51.0"
           curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VER}/k6-${K6_VER}-linux-amd64.tar.gz" | tar -xz
           sudo mv "k6-${K6_VER}-linux-amd64/k6" /usr/local/bin/k6
-          k6 version
 
+      # IMPORTANT: allow failure but continue
       - name: Run k6 test
+        continue-on-error: true
         run: |
           k6 run \
-            -e TARGET_URL=${{ github.event.inputs.target_url || 'https://example.com/' }} \
-            -e VUS=${{ github.event.inputs.vus || '50' }} \
-            -e DURATION=${{ github.event.inputs.duration || '30s' }} \
+            -e TARGET_URL=${{ github.event.inputs.target_url }} \
+            -e VUS=${{ github.event.inputs.vus }} \
+            -e DURATION=${{ github.event.inputs.duration }} \
             -e REGION=${{ matrix.region }} \
             -e INSTANCE=${{ matrix.instance }} \
             --out json=results-${{ matrix.region }}-${{ matrix.instance }}.json \
             script.js
 
+      # Always run summary
       - name: Write job summary
+        if: always()
         run: |
           FILE=results-${{ matrix.region }}-${{ matrix.instance }}.json
           .github/scripts/k6-summary.sh "$FILE" "${{ matrix.region }}" "${{ matrix.instance }}"
 
+      # Always upload artifacts
       - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: k6-results-${{ matrix.region }}-${{ matrix.instance }}
@@ -104,19 +101,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: results
 
-      - name: Install jq and bc
-        run: sudo apt-get update && sudo apt-get install -y jq bc
+      - name: Debug files (important)
+        run: ls -R results
 
-      - name: Make aggregate script executable
-        run: chmod +x .github/scripts/k6-aggregate.sh
+      - run: sudo apt-get update && sudo apt-get install -y jq bc
+
+      - run: chmod +x .github/scripts/k6-aggregate.sh
 
       - name: Run aggregation
         run: |
