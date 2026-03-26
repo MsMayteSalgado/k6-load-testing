@@ -24,6 +24,10 @@ export const options = {
     },
 };
 
+function mergeHeaders(base, extra) {
+    return Object.assign({}, base, extra);
+}
+
 export default function () {
     const profile = pickBrowserProfile();
     const jar = http.cookieJar();
@@ -44,50 +48,48 @@ export default function () {
     }
 
     // Mobile consistency
-    if (profile.mobile) { headers["sec-ch-ua-mobile"] = "?1"; }
+    if (profile.mobile) {
+        headers["sec-ch-ua-mobile"] = "?1";
+    }
 
     // Referrer simulation
     const ref = pickReferrer();
-    if (ref) headers["referer"] = ref;
+    if (ref) {
+        headers["referer"] = ref;
+    }
 
     // ---- Step 1: landing page ----
     const res1 = http.get(targetUrl, {
-        headers,
-        jar,
+        headers: headers,
+        jar: jar,
     });
 
     const ok1 = check(res1, {
-        "landing status 200": (r) => r.status === 200,
-        "landing < 500ms": (r) => r.timings.duration < 500,
+        "landing status 200": function (r) { return r.status === 200; },
+        "landing < 500ms": function (r) { return r.timings.duration < 500; },
     });
 
     sleep(1 + Math.random());
 
-    // ---- Step 2: simulate navigation (same origin) ----
+    // ---- Step 2: navigation ----
     const nextPath = "/?page=" + Math.floor(Math.random() * 10);
 
     const res2 = http.get(targetUrl + nextPath, {
-        headers: {
-            ...headers,
-            referer: targetUrl,
-        },
-        jar,
+        headers: mergeHeaders(headers, { referer: targetUrl }),
+        jar: jar,
     });
 
     const ok2 = check(res2, {
-        "nav status 200": (r) => r.status === 200,
-        "nav < 500ms": (r) => r.timings.duration < 500,
+        "nav status 200": function (r) { return r.status === 200; },
+        "nav < 500ms": function (r) { return r.timings.duration < 500; },
     });
 
-    // ---- Step 3: asset fetch (optional realism) ----
+    // ---- Step 3: asset fetch ----
     const asset = "/favicon.ico";
 
     http.get(targetUrl + asset, {
-        headers: {
-            ...headers,
-            referer: targetUrl,
-        },
-        jar,
+        headers: mergeHeaders(headers, { referer: targetUrl }),
+        jar: jar,
     });
 
     const success = ok1 && ok2;
