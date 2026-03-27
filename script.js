@@ -82,8 +82,10 @@ export default function () {
 
     // ---- Step 2: random page from common.txt ----
     const path = pickPath();
+    const base = targetUrl.endsWith("/") ? targetUrl.slice(0, -1) : targetUrl;
+    const url = base + path;
 
-    const res2 = http.get(targetUrl + path, {
+    const res2 = http.get(url, {
         headers: mergeHeaders(headers, { referer: targetUrl }),
         jar,
     });
