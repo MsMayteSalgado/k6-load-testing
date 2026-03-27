@@ -4,15 +4,18 @@ import { Rate, Trend } from "k6/metrics";
 import { BROWSER_PROFILES, TRAFFIC_SOURCES } from "./src/data.js";
 
 // load paths
-const PATHS = open("./wordlists/common.txt")
-    .split("\n")
-    .map(p => p.trim())
-    .filter(p => p.length > 0)
-    .map(p => p.startsWith("/") ? p : "/" + p);
+// const PATHS = open("./wordlists/common.txt")
+//     .split("\n")
+//     .map(p => p.trim())
+//     .filter(p => p.length > 0)
+//     .map(p => p.startsWith("/") ? p : "/" + p);
 
-if (!PATHS.length) {
-    throw new Error("wordlists/common.txt is empty");
-}
+// if (!PATHS.length) {
+//     throw new Error("wordlists/common.txt is empty");
+// }
+
+// fallback paths when common.txt is not used
+const PATHS = ["/", "/about", "/api", "/contact", "/products"];
 
 // metrics
 export const failedRequests = new Rate("failed_requests");
@@ -43,7 +46,6 @@ export const options = {
         http_req_duration: ["p(95)<700"],
         http_req_failed: ["rate<0.05"],
     },
-    thresholdAbortOnFail: false,
 };
 
 // helpers
