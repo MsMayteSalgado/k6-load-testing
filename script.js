@@ -4,7 +4,11 @@ import { Rate } from "k6/metrics";
 import { BROWSER_PROFILES, TRAFFIC_SOURCES } from "./src/data.js";
 
 // ✅ load file once
-const COMMON_PATHS = open("./wordlists/common.txt").split("\n").filter(p => p.trim() !== "");
+const COMMON_PATHS = open("./wordlists/common.txt")
+    .split("\n")
+    .map(p => p.trim())
+    .filter(p => p.length > 0)
+    .map(p => p.startsWith("/") ? p : "/" + p);
 
 export const failedRequests = new Rate("failed_requests");
 
@@ -29,6 +33,9 @@ function pickReferrer() {
 
 // ✅ pick random path
 function pickPath() {
+    if (!COMMON_PATHS || COMMON_PATHS.length === 0) {
+        return "/";
+    }
     return COMMON_PATHS[Math.floor(Math.random() * COMMON_PATHS.length)];
 }
 
