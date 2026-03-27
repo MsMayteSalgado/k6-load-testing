@@ -1,5 +1,8 @@
 name: k6 distributed test
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -67,53 +70,29 @@ jobs:
           echo "Public IP: $IP"
           echo "Region: ${{ matrix.region }} | Instance: ${{ matrix.instance }}"
 
-      # ✅ Wordlist handling (SAFE)
       - name: Prepare wordlist
         run: |
           mkdir -p wordlists
 
-          echo "Checking repo wordlist..."
           if [ -f wordlists/common.txt ]; then
-            echo "Repo wordlist found"
             cp wordlists/common.txt wordlists/base.txt
           else
-            echo "No repo wordlist"
             touch wordlists/base.txt
           fi
 
           BASE=${{ github.event.inputs.target_url }}
 
-          echo "Trying sitemap..."
           if curl -f -s "$BASE/sitemap.xml" -o sitemap.xml; then
-            echo "Sitemap found"
-
             grep -oP '(?<=<loc>).*?(?=</loc>)' sitemap.xml \
               | sed "s#https\?://[^/]*##" \
               >> wordlists/base.txt
-          else
-            echo "No sitemap or blocked"
           fi
 
           sort -u wordlists/base.txt > wordlists/common.txt
 
           if [ ! -s wordlists/common.txt ]; then
-            echo "Wordlist empty, adding defaults"
             echo "/" > wordlists/common.txt
-            echo "/about" >> wordlists/common.txt
-            echo "/contact" >> wordlists/common.txt
           fi
-
-          echo "Total paths:"
-          wc -l wordlists/common.txt
-
-          echo "Sample paths:"
-          head -10 wordlists/common.txt
-
-      - name: Connectivity check
-        run: |
-          URL=${{ github.event.inputs.target_url }}
-          echo "Testing: $URL"
-          curl -I $URL || echo "Curl failed"
 
       - name: Install k6
         run: |
@@ -128,8 +107,6 @@ jobs:
             -e TARGET_URL=${{ github.event.inputs.target_url }} \
             -e VUS=${{ github.event.inputs.vus }} \
             -e DURATION=${{ github.event.inputs.duration }} \
-            -e REGION=${{ matrix.region }} \
-            -e INSTANCE=${{ matrix.instance }} \
             --summary-export=summary-${{ matrix.region }}-${{ matrix.instance }}.json \
             --out json=raw-${{ matrix.region }}-${{ matrix.instance }}.json \
             script.js
@@ -139,8 +116,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: k6-${{ matrix.region }}-${{ matrix.instance }}
-          path: |
-            *.json
+          path: "*.json"
 
   aggregate-summary:
     needs: load-test
@@ -157,6 +133,52 @@ jobs:
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y jq bc
 
+      # ✅ FIX PERMISSION ISSUE
+      - name: Make script executable
+        run: chmod +x .github/scripts/k6-aggregate.sh
+
+      # ✅ SAFE EXECUTION
       - name: Run aggregation
+        run: bash .github/scripts/k6-aggregate.sh results
+
+      # ✅ AUTO CLEAN WORDLIST
+      - name: Clean wordlist
         run: |
-          .github/scripts/k6-aggregate.sh results
+          echo "Extracting bad paths..."
+
+          find results -name "notfound-endpoints.json" -exec cat {} \; 2>/dev/null \
+            | jq -s 'add // {} | keys[]' \
+            | sort -u > bad.txt
+
+          if [ ! -s bad.txt ]; then
+            echo "No bad paths"
+            exit 0
+          fi
+
+          grep -v -F -f bad.txt wordlists/common.txt > clean.txt || true
+
+          if [ ! -s clean.txt ]; then
+            echo "/" > clean.txt
+          fi
+
+          mv clean.txt wordlists/common.txt
+
+          echo "Cleaned wordlist:"
+          wc -l wordlists/common.txt
+
+      # ✅ COMMIT BACK
+      - name: Commit cleaned wordlist
+        if: github.actor != 'github-actions[bot]'
+        run: |
+          git config --global user.name "k6-bot"
+          git config --global user.email "k6-bot@users.noreply.github.com"
+
+          git add wordlists/common.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+
+          git commit -m "auto-clean: remove bad endpoints"
+          git push

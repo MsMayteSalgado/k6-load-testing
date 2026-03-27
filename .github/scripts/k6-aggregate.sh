@@ -4,7 +4,7 @@ set -e
 
 DIR=$1
 
-FILES=$(find "$DIR" -type f -name "summary-*.json")
+FILES=$(find "$DIR" -type f -name "summary-*.json" 2>/dev/null || true)
 
 TOTAL_REQS=0
 TOTAL_FAIL_REQS=0
@@ -72,18 +72,18 @@ fi
   echo "| Weighted Avg Latency (ms) | $WEIGHTED_LATENCY |"
 } >> "$GITHUB_STEP_SUMMARY"
 
-# ✅ merge slow endpoints
+# slow endpoints
 echo "" >> "$GITHUB_STEP_SUMMARY"
 echo "### Top Slow Endpoints" >> "$GITHUB_STEP_SUMMARY"
 
-find "$DIR" -name "slow-endpoints.json" -exec cat {} \; \
-  | jq -s 'add | to_entries | sort_by(-.value) | .[:10]' \
+find "$DIR" -name "slow-endpoints.json" -exec cat {} \; 2>/dev/null \
+  | jq -s 'add // {} | to_entries | sort_by(-.value) | .[:10]' \
   >> "$GITHUB_STEP_SUMMARY"
 
-# ✅ merge failed endpoints
+# failed endpoints
 echo "" >> "$GITHUB_STEP_SUMMARY"
 echo "### Top Failed Endpoints" >> "$GITHUB_STEP_SUMMARY"
 
-find "$DIR" -name "failed-endpoints.json" -exec cat {} \; \
-  | jq -s 'add | to_entries | sort_by(-.value) | .[:10]' \
+find "$DIR" -name "failed-endpoints.json" -exec cat {} \; 2>/dev/null \
+  | jq -s 'add // {} | to_entries | sort_by(-.value) | .[:10]' \
   >> "$GITHUB_STEP_SUMMARY"
