@@ -17,11 +17,11 @@ TOTAL_DURATION=0
 
 for f in $FILES; do
 
-  # Clean single values
-  REQS=$(jq -r '.metrics.http_reqs.values.count // 0' "$f" | head -n1 | tr -d '[:space:]')
-  FAIL_RATE=$(jq -r '.metrics.failed_requests.values.rate // 0' "$f" | head -n1 | tr -d '[:space:]')
-  P95=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 0' "$f" | head -n1 | tr -d '[:space:]')
-  AVG=$(jq -r '.metrics.http_req_duration.values.avg // 0' "$f" | head -n1 | tr -d '[:space:]')
+  # ✅ Correct paths for summary-export
+  REQS=$(jq -r '.metrics.http_reqs.count // 0' "$f" | head -n1 | tr -d '[:space:]')
+  FAIL_RATE=$(jq -r '.metrics.failed_requests.rate // 0' "$f" | head -n1 | tr -d '[:space:]')
+  P95=$(jq -r '.metrics.http_req_duration["p(95)"] // 0' "$f" | head -n1 | tr -d '[:space:]')
+  AVG=$(jq -r '.metrics.http_req_duration.avg // 0' "$f" | head -n1 | tr -d '[:space:]')
 
   # Fallback safety
   REQS=${REQS:-0}

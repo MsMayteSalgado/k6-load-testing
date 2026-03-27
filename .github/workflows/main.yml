@@ -16,17 +16,17 @@ on:
       duration:
         description: "Test duration (e.g. 30s, 2m)"
         required: false
-        default: "30s"
+        default: "10s"
 
       regions:
         description: "Comma-separated region labels"
         required: false
-        default: "region-1"
+        default: "region-1,region-2"
 
       instances:
         description: "Comma-separated instance IDs"
         required: false
-        default: "1"
+        default: "1,2"
 
 jobs:
   prepare-matrix:
@@ -38,8 +38,8 @@ jobs:
     steps:
       - id: set
         run: |
-          regions='["'$(echo "${{ github.event.inputs.regions || 'region-1' }}" | sed 's/,/","/g')'"]'
-          instances='["'$(echo "${{ github.event.inputs.instances || '1' }}" | sed 's/,/","/g')'"]'
+          regions='["'$(echo "${{ github.event.inputs.regions }}" | sed 's/,/","/g')'"]'
+          instances='["'$(echo "${{ github.event.inputs.instances }}" | sed 's/,/","/g')'"]'
 
           echo "regions=$regions" >> $GITHUB_OUTPUT
           echo "instances=$instances" >> $GITHUB_OUTPUT
@@ -62,13 +62,19 @@ jobs:
 
       - run: chmod +x .github/scripts/k6-summary.sh
 
+      # ✅ PUBLIC IP (your requirement)
+      - name: Get public IP
+        run: |
+          IP=$(curl -s https://api.ipify.org)
+          echo "Public IP: $IP"
+          echo "Region: ${{ matrix.region }} | Instance: ${{ matrix.instance }}"
+
       - name: Install k6
         run: |
           K6_VER="v0.51.0"
           curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VER}/k6-${K6_VER}-linux-amd64.tar.gz" | tar -xz
           sudo mv "k6-${K6_VER}-linux-amd64/k6" /usr/local/bin/k6
 
-      # IMPORTANT: allow failure but continue
       - name: Run k6 test
         continue-on-error: true
         run: |
@@ -78,23 +84,24 @@ jobs:
             -e DURATION=${{ github.event.inputs.duration }} \
             -e REGION=${{ matrix.region }} \
             -e INSTANCE=${{ matrix.instance }} \
-            --out json=results-${{ matrix.region }}-${{ matrix.instance }}.json \
+            --summary-export=summary-${{ matrix.region }}-${{ matrix.instance }}.json \
+            --out json=raw-${{ matrix.region }}-${{ matrix.instance }}.json \
             script.js
 
-      # Always run summary
       - name: Write job summary
         if: always()
         run: |
-          FILE=results-${{ matrix.region }}-${{ matrix.instance }}.json
+          FILE=summary-${{ matrix.region }}-${{ matrix.instance }}.json
           .github/scripts/k6-summary.sh "$FILE" "${{ matrix.region }}" "${{ matrix.instance }}"
 
-      # Always upload artifacts
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: k6-results-${{ matrix.region }}-${{ matrix.instance }}
-          path: results-*.json
+          path: |
+            summary-*.json
+            raw-*.json
 
   aggregate-summary:
     needs: load-test
@@ -108,8 +115,8 @@ jobs:
         with:
           path: results
 
-      - name: Debug files (important)
-        run: ls -R results
+      - name: Debug files
+        run: find results -name "*.json"
 
       - run: sudo apt-get update && sudo apt-get install -y jq bc
 
