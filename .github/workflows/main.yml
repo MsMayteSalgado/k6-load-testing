@@ -14,7 +14,7 @@ on:
         default: "50"
 
       duration:
-        description: "Test duration (e.g. 30s, 2m)"
+        description: "Test duration"
         required: false
         default: "10s"
 
@@ -58,16 +58,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - run: chmod +x .github/scripts/k6-summary.sh
+      - name: Make scripts executable
+        run: chmod +x .github/scripts/*.sh
 
-      # ✅ PUBLIC IP (your requirement)
+      # ✅ PUBLIC IP
       - name: Get public IP
         run: |
           IP=$(curl -s https://api.ipify.org)
           echo "Public IP: $IP"
           echo "Region: ${{ matrix.region }} | Instance: ${{ matrix.instance }}"
+
+      # ✅ Generate common.txt from sitemap
+      - name: Generate wordlist
+        run: |
+          mkdir -p wordlists
+
+          BASE=${{ github.event.inputs.target_url }}
+
+          curl -s "$BASE/sitemap.xml" > sitemap.xml || true
+
+          grep -oP '(?<=<loc>).*?(?=</loc>)' sitemap.xml \
+            | sed "s#$BASE##" \
+            | sed 's#^$#/#' \
+            | sort -u \
+            > wordlists/common.txt
+
+          # fallback if empty
+          if [ ! -s wordlists/common.txt ]; then
+            echo "/" > wordlists/common.txt
+          fi
+
+          echo "Total paths:"
+          wc -l wordlists/common.txt
 
       - name: Install k6
         run: |
@@ -118,9 +143,11 @@ jobs:
       - name: Debug files
         run: find results -name "*.json"
 
-      - run: sudo apt-get update && sudo apt-get install -y jq bc
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y jq bc
 
-      - run: chmod +x .github/scripts/k6-aggregate.sh
+      - name: Make scripts executable
+        run: chmod +x .github/scripts/*.sh
 
       - name: Run aggregation
         run: |
