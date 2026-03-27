@@ -3,7 +3,7 @@ import { check, sleep } from "k6";
 import { Rate, Trend } from "k6/metrics";
 import { BROWSER_PROFILES, TRAFFIC_SOURCES } from "./src/data.js";
 
-// load paths once
+// load paths
 const PATHS = open("./wordlists/common.txt")
     .split("\n")
     .map(p => p.trim())
@@ -14,21 +14,25 @@ if (!PATHS.length) {
     throw new Error("wordlists/common.txt is empty");
 }
 
+// metrics
 export const failedRequests = new Rate("failed_requests");
 export const slowRequests = new Rate("slow_requests");
 export const perPathTrend = new Trend("per_path_duration");
 
+// require target
 if (!__ENV.TARGET_URL) {
     throw new Error("TARGET_URL is required");
 }
 
+// normalize URL
 const BASE = __ENV.TARGET_URL.endsWith("/")
     ? __ENV.TARGET_URL.slice(0, -1)
     : __ENV.TARGET_URL;
 
-// global tracking (per instance)
+// tracking maps
 let slowMap = {};
 let failMap = {};
+let notFoundMap = {};
 
 export const options = {
     vus: Number(__ENV.VUS) || 50,
@@ -37,9 +41,11 @@ export const options = {
         failed_requests: ["rate<0.05"],
         slow_requests: ["rate<0.10"],
         http_req_duration: ["p(95)<700"],
+        http_req_failed: ["rate<0.01"],
     },
 };
 
+// helpers
 function pickBrowserProfile() {
     return BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)];
 }
@@ -56,6 +62,7 @@ function mergeHeaders(base, extra) {
     return Object.assign({}, base, extra);
 }
 
+// main test
 export default function () {
     const profile = pickBrowserProfile();
     const jar = http.cookieJar();
@@ -88,7 +95,7 @@ export default function () {
 
     sleep(1 + Math.random());
 
-    // page
+    // page request
     const path = pickPath();
     const url = BASE + path;
 
@@ -104,41 +111,42 @@ export default function () {
     perPathTrend.add(duration, { path: path });
 
     const isSlow = duration > 700;
-    const isFail = res.status >= 400;
+    const isServerError = res.status >= 500;
 
     slowRequests.add(isSlow);
-    failedRequests.add(isFail);
+    failedRequests.add(isServerError);
 
-    // track counts
+    // track slow
     if (isSlow) {
         slowMap[path] = (slowMap[path] || 0) + 1;
-    }
-
-    if (isFail) {
-        failMap[path] = (failMap[path] || 0) + 1;
-    }
-
-    // debug only when needed
-    if (isFail) {
-        console.log(`FAIL ${res.status} ${path}`);
-    }
-
-    if (isSlow) {
         console.log(`SLOW ${duration}ms ${path}`);
     }
 
+    // track server errors
+    if (isServerError) {
+        failMap[path] = (failMap[path] || 0) + 1;
+        console.log(`SERVER ERROR ${res.status} ${path}`);
+    }
+
+    // track 404 separately
+    if (res.status === 404) {
+        notFoundMap[path] = (notFoundMap[path] || 0) + 1;
+    }
+
+    // validation
     check(res, {
-        "status ok": (r) => r.status >= 200 && r.status < 400,
+        "status ok": (r) => r.status < 500,
     });
 
     sleep(1 + Math.random() * 2);
 }
 
-// ✅ export files for CI
+// export results
 export function handleSummary(data) {
     return {
         "summary.json": JSON.stringify(data, null, 2),
         "slow-endpoints.json": JSON.stringify(slowMap, null, 2),
         "failed-endpoints.json": JSON.stringify(failMap, null, 2),
+        "notfound-endpoints.json": JSON.stringify(notFoundMap, null, 2),
     };
 }
