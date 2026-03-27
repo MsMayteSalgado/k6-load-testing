@@ -22,28 +22,51 @@ function loadPathsFromTarget() {
         });
 
         if (sitemapRes.status === 200) {
-            const sitemapPaths = sitemapRes.body.match(/<loc>.*?<\/loc>/g) || [];
+            console.log(`Sitemap status: ${sitemapRes.status}`);
+            
+            // Extract URL paths from sitemap
+            const urlMatches = sitemapRes.body.match(/<loc>.*?<\/loc>/g) || [];
+            console.log(`Found ${urlMatches.length} <loc> tags in sitemap`);
+            
             const paths = new Set();
-            sitemapPaths.forEach(loc => {
-                const url = loc.replace(/<\/?loc>/g, "");
-                const path = url.replace(/https?:\/\/[^/]*/, "");
-                if (path) paths.add(path);
+            urlMatches.forEach((loc, idx) => {
+                // Remove <loc></loc> tags
+                const url = loc.replace(/<\/?loc>/g, "").trim();
+                // Extract path from URL (remove domain)
+                const pathMatch = url.match(/https?:\/\/[^/]*(\/.*)?/);
+                const path = pathMatch && pathMatch[1] ? pathMatch[1] : "/";
+                
+                if (path) {
+                    paths.add(path);
+                    if (idx < 5) console.log(`  Path ${idx + 1}: ${path}`);
+                }
             });
-            console.log(`✓ Loaded ${sitemapPaths.length} paths from sitemap.xml`);
+            
+            console.log(`✓ Loaded ${paths.size} unique paths from sitemap.xml`);
             return Array.from(paths);
+        } else {
+            console.log(`Sitemap status: ${sitemapRes.status}`);
         }
     } catch (e) {
-        console.log("✗ Could not fetch sitemap.xml");
+        console.log(`✗ Error fetching sitemap.xml: ${e}`);
     }
 
     return null;
 }
 
-// load paths
-const PATHS = loadPathsFromTarget();
+// Global variable to store paths
+let PATHS = null;
 
-if (!PATHS || !PATHS.length) {
-    console.log("⚠ No sitemap.xml found. Page requests will be skipped.");
+// Setup function - runs once before test
+export function setup() {
+    PATHS = loadPathsFromTarget();
+    
+    if (!PATHS || !PATHS.length) {
+        console.log("⚠ No sitemap.xml found. Page requests will be skipped.");
+        return { hasSitemap: false };
+    }
+    
+    return { hasSitemap: true };
 }
 
 // metrics
@@ -64,6 +87,7 @@ export const options = {
         slow_requests: ["rate<0.10"],
         http_req_duration: ["p(95)<700"],
     },
+    setupTimeout: "30s",
 };
 
 // helpers
@@ -118,7 +142,6 @@ export default function () {
 
     // page request - only if sitemap was found
     if (!PATHS || PATHS.length === 0) {
-        console.log("⚠ Skipping page request - no sitemap.xml found");
         return;
     }
 
@@ -176,4 +199,14 @@ export function handleSummary(data) {
         "failed-endpoints.json": JSON.stringify(failMap, null, 2),
         "notfound-endpoints.json": JSON.stringify(notFoundMap, null, 2),
     };
+}
+
+// teardown function - runs after test
+export function teardown() {
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("Test Summary:");
+    console.log("Slow Endpoints:", Object.keys(slowMap).length > 0 ? JSON.stringify(slowMap) : "None");
+    console.log("Failed Endpoints:", Object.keys(failMap).length > 0 ? JSON.stringify(failMap) : "None");
+    console.log("Not Found (404):", Object.keys(notFoundMap).length > 0 ? JSON.stringify(notFoundMap) : "None");
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
