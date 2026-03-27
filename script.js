@@ -3,17 +3,12 @@ import { check, sleep } from "k6";
 import { Rate } from "k6/metrics";
 import { BROWSER_PROFILES, TRAFFIC_SOURCES } from "./src/data.js";
 
+// ✅ load file once
+const COMMON_PATHS = open("./wordlists/common.txt").split("\n").filter(p => p.trim() !== "");
+
 export const failedRequests = new Rate("failed_requests");
 
 const targetUrl = __ENV.TARGET_URL || "https://localhost:3000/";
-
-export function pickBrowserProfile() {
-    return BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)];
-}
-
-export function pickReferrer() {
-    return TRAFFIC_SOURCES[Math.floor(Math.random() * TRAFFIC_SOURCES.length)];
-}
 
 export const options = {
     vus: Number(__ENV.VUS) || 100,
@@ -23,6 +18,19 @@ export const options = {
         http_req_duration: ["p(95)<700"],
     },
 };
+
+function pickBrowserProfile() {
+    return BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)];
+}
+
+function pickReferrer() {
+    return TRAFFIC_SOURCES[Math.floor(Math.random() * TRAFFIC_SOURCES.length)];
+}
+
+// ✅ pick random path
+function pickPath() {
+    return COMMON_PATHS[Math.floor(Math.random() * COMMON_PATHS.length)];
+}
 
 function mergeHeaders(base, extra) {
     return Object.assign({}, base, extra);
@@ -42,58 +50,49 @@ export default function () {
         "cache-control": "no-cache",
     };
 
-    // Attach client hints
     for (const key in profile.hints) {
         headers[key.toLowerCase()] = profile.hints[key];
     }
 
-    // Mobile consistency
     if (profile.mobile) {
         headers["sec-ch-ua-mobile"] = "?1";
     }
 
-    // Referrer simulation
     const ref = pickReferrer();
     if (ref) {
         headers["referer"] = ref;
     }
 
-    // ---- Step 1: landing page ----
-    const res1 = http.get(targetUrl, {
-        headers: headers,
-        jar: jar,
-    });
+    // ---- Step 1: landing ----
+    const res1 = http.get(targetUrl, { headers, jar });
 
     const ok1 = check(res1, {
-        "landing status 200": function (r) { return r.status === 200; },
-        "landing < 700ms": function (r) { return r.timings.duration < 700; },
+        "landing status 200": (r) => r.status === 200,
+        "landing < 700ms": (r) => r.timings.duration < 700,
     });
 
     sleep(1 + Math.random());
 
-    // ---- Step 2: navigation ----
-    const nextPath = "/?page=" + Math.floor(Math.random() * 10);
+    // ---- Step 2: random page from common.txt ----
+    const path = pickPath();
 
-    const res2 = http.get(targetUrl + nextPath, {
+    const res2 = http.get(targetUrl + path, {
         headers: mergeHeaders(headers, { referer: targetUrl }),
-        jar: jar,
+        jar,
     });
 
     const ok2 = check(res2, {
-        "nav status 200": function (r) { return r.status === 200; },
-        "nav < 700ms": function (r) { return r.timings.duration < 700; },
+        "page status 200": (r) => r.status === 200,
+        "page < 700ms": (r) => r.timings.duration < 700,
     });
 
-    // ---- Step 3: asset fetch ----
-    const asset = "/favicon.ico";
-
-    http.get(targetUrl + asset, {
+    // ---- Step 3: asset ----
+    http.get(targetUrl + "/favicon.ico", {
         headers: mergeHeaders(headers, { referer: targetUrl }),
-        jar: jar,
+        jar,
     });
 
-    const success = ok1 && ok2;
-    failedRequests.add(!success);
+    failedRequests.add(!(ok1 && ok2));
 
     sleep(1 + Math.random() * 2);
 }
