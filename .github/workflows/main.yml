@@ -140,8 +140,7 @@ jobs:
         with:
           name: k6-${{ matrix.region }}-${{ matrix.instance }}
           path: |
-            summary-*.json
-            raw-*.json
+            *.json
 
   aggregate-summary:
     needs: load-test

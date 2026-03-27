@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 DIR=$1
 
 FILES=$(find "$DIR" -type f -name "summary-*.json")
@@ -27,19 +29,16 @@ for f in $FILES; do
   P95=${P95:-0}
   AVG=${AVG:-0}
 
-  # format
   REQS=$(printf "%.0f" "$REQS")
   FAIL_RATE=$(printf "%.4f" "$FAIL_RATE")
   P95=$(printf "%.0f" "$P95")
   AVG=$(printf "%.0f" "$AVG")
 
-  # ✅ correct parsing
   NAME=$(basename "$f" .json)
   NAME=${NAME#summary-}
   INSTANCE=${NAME##*-}
   REGION=${NAME%-*}
 
-  # skip empty
   if [ "$REQS" -eq 0 ]; then
     continue
   fi
@@ -53,6 +52,7 @@ for f in $FILES; do
 
 done
 
+# global metrics
 if [ "$TOTAL_REQS" -gt 0 ]; then
   WEIGHTED_LATENCY=$(echo "scale=2; $TOTAL_DURATION / $TOTAL_REQS" | bc)
   GLOBAL_FAIL_RATE=$(echo "scale=6; $TOTAL_FAIL_REQS / $TOTAL_REQS" | bc)
@@ -71,3 +71,19 @@ fi
   echo "| Failure Rate | $GLOBAL_FAIL_RATE |"
   echo "| Weighted Avg Latency (ms) | $WEIGHTED_LATENCY |"
 } >> "$GITHUB_STEP_SUMMARY"
+
+# ✅ merge slow endpoints
+echo "" >> "$GITHUB_STEP_SUMMARY"
+echo "### Top Slow Endpoints" >> "$GITHUB_STEP_SUMMARY"
+
+find "$DIR" -name "slow-endpoints.json" -exec cat {} \; \
+  | jq -s 'add | to_entries | sort_by(-.value) | .[:10]' \
+  >> "$GITHUB_STEP_SUMMARY"
+
+# ✅ merge failed endpoints
+echo "" >> "$GITHUB_STEP_SUMMARY"
+echo "### Top Failed Endpoints" >> "$GITHUB_STEP_SUMMARY"
+
+find "$DIR" -name "failed-endpoints.json" -exec cat {} \; \
+  | jq -s 'add | to_entries | sort_by(-.value) | .[:10]' \
+  >> "$GITHUB_STEP_SUMMARY"
