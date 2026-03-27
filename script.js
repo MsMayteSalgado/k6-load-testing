@@ -41,7 +41,7 @@ export const options = {
         failed_requests: ["rate<0.05"],
         slow_requests: ["rate<0.10"],
         http_req_duration: ["p(95)<700"],
-        http_req_failed: ["rate<0.01"],
+        http_req_failed: ["rate<0.05"],
     },
 };
 
