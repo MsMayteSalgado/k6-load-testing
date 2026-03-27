@@ -13,62 +13,37 @@ const BASE = __ENV.TARGET_URL.endsWith("/")
     ? __ENV.TARGET_URL.slice(0, -1)
     : __ENV.TARGET_URL;
 
-// load paths dynamically from target website
+// load paths dynamically from target website sitemap
 function loadPathsFromTarget() {
-    const fallbackPaths = ["/", "/about", "/api", "/contact", "/products"];
-    const paths = new Set(fallbackPaths);
-    
     try {
         // Try to fetch sitemap.xml
         const sitemapRes = http.get(BASE + "/sitemap.xml", {
             timeout: "5s",
         });
-        
+
         if (sitemapRes.status === 200) {
             const sitemapPaths = sitemapRes.body.match(/<loc>.*?<\/loc>/g) || [];
+            const paths = new Set();
             sitemapPaths.forEach(loc => {
                 const url = loc.replace(/<\/?loc>/g, "");
                 const path = url.replace(/https?:\/\/[^/]*/, "");
                 if (path) paths.add(path);
             });
             console.log(`✓ Loaded ${sitemapPaths.length} paths from sitemap.xml`);
+            return Array.from(paths);
         }
     } catch (e) {
         console.log("✗ Could not fetch sitemap.xml");
     }
-    
-    try {
-        // Try to fetch robots.txt
-        const robotsRes = http.get(BASE + "/robots.txt", {
-            timeout: "5s",
-        });
-        
-        if (robotsRes.status === 200) {
-            const lines = robotsRes.body.split("\n");
-            let disallowCount = 0;
-            lines.forEach(line => {
-                if (line.toLowerCase().startsWith("disallow:")) {
-                    const path = line.replace(/disallow:\s*/i, "").trim();
-                    if (path && path !== "*" && path !== "/") {
-                        paths.add(path);
-                        disallowCount++;
-                    }
-                }
-            });
-            console.log(`✓ Loaded ${disallowCount} paths from robots.txt`);
-        }
-    } catch (e) {
-        console.log("✗ Could not fetch robots.txt");
-    }
-    
-    return Array.from(paths);
+
+    return null;
 }
 
 // load paths
 const PATHS = loadPathsFromTarget();
 
-if (!PATHS.length) {
-    throw new Error("No paths found from target or fallback");
+if (!PATHS || !PATHS.length) {
+    console.log("⚠ No sitemap.xml found. Page requests will be skipped.");
 }
 
 // metrics
@@ -141,7 +116,12 @@ export default function () {
 
     sleep(1 + Math.random());
 
-    // page request
+    // page request - only if sitemap was found
+    if (!PATHS || PATHS.length === 0) {
+        console.log("⚠ Skipping page request - no sitemap.xml found");
+        return;
+    }
+
     const path = pickPath();
     const url = BASE + path;
 
@@ -185,7 +165,7 @@ export default function () {
         "status ok": (r) => r.status < 500,
     });
 
-    sleep(1 + Math.random() * 2);
+    sleep(0.5 + Math.random() * 1.5);
 }
 
 // export results
