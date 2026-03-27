@@ -12,23 +12,31 @@ const BASE = __ENV.TARGET_URL.endsWith("/")
     ? __ENV.TARGET_URL.slice(0, -1)
     : __ENV.TARGET_URL;
 
-const INSTANCE       = Number(__ENV.INSTANCE)        || 1;
+const INSTANCE = Number(__ENV.INSTANCE) || 1;
 const TOTAL_INSTANCES = Number(__ENV.TOTAL_INSTANCES) || 1;
-const VUS            = Number(__ENV.VUS)              || 50;
+const VUS = Number(__ENV.VUS) || 50;
+
+// "true" string → true, anything else → false
+const USE_SITEMAP = (__ENV.USE_SITEMAP || "true") === "true";
+const USE_WORDLIST = (__ENV.USE_WORDLIST || "true") === "true";
 
 // ─── WORDLIST (init stage — open() only allowed here) ─────────────────────────
-// Each VU gets paths[__VU - 1]; VUs beyond the list length fall back to "/".
 let WORDLIST_PATHS = [];
-try {
-    const raw = open("wordlists/common.txt");
-    WORDLIST_PATHS = raw
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .map((l) => (l.startsWith("/") ? l : "/" + l));
-    console.log(`Loaded ${WORDLIST_PATHS.length} paths from wordlists/common.txt`);
-} catch (_) {
-    // file absent — handled in setup()
+
+if (USE_WORDLIST) {
+    try {
+        const raw = open("wordlists/common.txt");
+        WORDLIST_PATHS = raw
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .map((l) => (l.startsWith("/") ? l : "/" + l));
+        console.log(`Loaded ${WORDLIST_PATHS.length} paths from wordlists/common.txt`);
+    } catch (_) {
+        console.log("wordlists/common.txt not found or unreadable — wordlist disabled");
+    }
+} else {
+    console.log("USE_WORDLIST=false — skipping wordlists/common.txt");
 }
 
 // ─── SITEMAP LOADER ───────────────────────────────────────────────────────────
@@ -46,8 +54,8 @@ function loadSitemapPaths() {
 
         const paths = new Set();
         locs.forEach((loc, i) => {
-            const url  = loc.replace(/<\/?loc>/g, "").trim();
-            const m    = url.match(/https?:\/\/[^/]*(\/.*)?/);
+            const url = loc.replace(/<\/?loc>/g, "").trim();
+            const m = url.match(/https?:\/\/[^/]*(\/.*)?/);
             const path = m && m[1] ? m[1] : "/";
             paths.add(path);
             if (i < 5) console.log(`  [${i + 1}] ${path}`);
@@ -63,62 +71,65 @@ function loadSitemapPaths() {
 }
 
 // ─── SETUP ────────────────────────────────────────────────────────────────────
-// Returns { mode, paths } consumed by default() and teardown().
 export function setup() {
+
     // ── Sitemap mode ──────────────────────────────────────────────────────────
-    const allPaths = loadSitemapPaths();
+    if (USE_SITEMAP) {
+        const allPaths = loadSitemapPaths();
 
-    if (allPaths && allPaths.length > 0) {
-        // Divide sitemap evenly across instances; this instance gets its slice.
-        const chunkSize    = Math.ceil(allPaths.length / TOTAL_INSTANCES);
-        const start        = (INSTANCE - 1) * chunkSize;
-        const instancePaths = allPaths.slice(start, start + chunkSize);
+        if (allPaths && allPaths.length > 0) {
+            // Slice sitemap evenly across instances
+            const chunkSize = Math.ceil(allPaths.length / TOTAL_INSTANCES);
+            const start = (INSTANCE - 1) * chunkSize;
+            const instancePaths = allPaths.slice(start, start + chunkSize);
 
-        console.log(
-            `Instance ${INSTANCE}/${TOTAL_INSTANCES}: ` +
-            `assigned paths [${start}..${start + instancePaths.length - 1}] ` +
-            `(${instancePaths.length} paths)`
-        );
+            console.log(
+                `Instance ${INSTANCE}/${TOTAL_INSTANCES}: ` +
+                `sitemap slice [${start}..${start + instancePaths.length - 1}] ` +
+                `(${instancePaths.length} paths)`
+            );
 
-        return { mode: "sitemap", paths: instancePaths };
+            return { mode: "sitemap", paths: instancePaths };
+        }
+
+        console.log("USE_SITEMAP=true but sitemap unavailable — falling through");
+    } else {
+        console.log("USE_SITEMAP=false — skipping sitemap");
     }
 
     // ── Wordlist mode ─────────────────────────────────────────────────────────
-    if (WORDLIST_PATHS.length > 0) {
-        // VU assignment (see pickPath):
-        //   VU __VU (1-based) → WORDLIST_PATHS[__VU - 1]  (if it exists)
-        //   otherwise → "/"
+    if (USE_WORDLIST && WORDLIST_PATHS.length > 0) {
         const effective = Math.min(WORDLIST_PATHS.length, VUS);
         console.log(
-            `No sitemap. Wordlist mode: ${WORDLIST_PATHS.length} words, ` +
-            `${VUS} VUs → ${effective} VUs get a unique path, ` +
+            `Wordlist mode: ${WORDLIST_PATHS.length} words, ${VUS} VUs → ` +
+            `${effective} VUs get a unique path, ` +
             `${Math.max(0, VUS - effective)} VUs fall back to /`
         );
         return { mode: "wordlist", paths: WORDLIST_PATHS };
     }
 
-    // ── Fallback ──────────────────────────────────────────────────────────────
-    console.log("⚠ No sitemap or wordlist. All page requests will target /");
+    // ── Root fallback ─────────────────────────────────────────────────────────
+    console.log("⚠ No sitemap or wordlist active — all requests will target /");
     return { mode: "root", paths: ["/"] };
 }
 
 // ─── METRICS ──────────────────────────────────────────────────────────────────
 export const failedRequests = new Rate("failed_requests");
-export const slowRequests   = new Rate("slow_requests");
-export const perPathTrend   = new Trend("per_path_duration");
+export const slowRequests = new Rate("slow_requests");
+export const perPathTrend = new Trend("per_path_duration");
 
 // ─── TRACKING ─────────────────────────────────────────────────────────────────
-let slowMap    = {};
-let failMap    = {};
+let slowMap = {};
+let failMap = {};
 let notFoundMap = {};
 
 // ─── OPTIONS ──────────────────────────────────────────────────────────────────
 export const options = {
-    vus:      VUS,
+    vus: VUS,
     duration: __ENV.DURATION || "30s",
     thresholds: {
-        failed_requests:  ["rate<0.05"],
-        slow_requests:    ["rate<0.10"],
+        failed_requests: ["rate<0.05"],
+        slow_requests: ["rate<0.10"],
         http_req_duration: ["p(95)<700"],
     },
     setupTimeout: "30s",
@@ -134,13 +145,13 @@ function pickReferrer() {
 }
 
 /**
- * Path selection strategy:
+ * Path selection per mode:
  *
- * sitemap  → random from this instance's slice
- * wordlist → VU-index based:
- *              __VU (1-based) ≤ paths.length  →  paths[__VU - 1]
- *              __VU > paths.length             →  "/"
- * root     → always "/"
+ *  sitemap  → random from this instance's slice of the sitemap
+ *  wordlist → deterministic by VU index:
+ *               __VU (1-based) ≤ paths.length  →  paths[__VU - 1]
+ *               __VU > paths.length             →  "/"
+ *  root     → always "/"
  */
 function pickPath(data) {
     if (data.mode === "sitemap") {
@@ -148,7 +159,7 @@ function pickPath(data) {
     }
 
     if (data.mode === "wordlist") {
-        const idx = __VU - 1; // __VU is 1-based
+        const idx = __VU - 1; // __VU is 1-based in k6
         return idx < data.paths.length ? data.paths[idx] : "/";
     }
 
@@ -162,16 +173,16 @@ function mergeHeaders(base, extra) {
 // ─── MAIN TEST ────────────────────────────────────────────────────────────────
 export default function (data) {
     const profile = pickBrowserProfile();
-    const jar     = http.cookieJar();
+    const jar = http.cookieJar();
 
     const headers = {
-        "user-agent":               profile.ua,
-        "accept":                   "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "accept-language":          profile.languages,
-        "accept-encoding":          "gzip, deflate, br",
-        "connection":               "keep-alive",
+        "user-agent": profile.ua,
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "accept-language": profile.languages,
+        "accept-encoding": "gzip, deflate, br",
+        "connection": "keep-alive",
         "upgrade-insecure-requests": "1",
-        "cache-control":            "no-cache",
+        "cache-control": "no-cache",
     };
 
     for (const key in profile.hints) {
@@ -196,7 +207,7 @@ export default function (data) {
 
     // Target path request
     const path = pickPath(data);
-    const url  = BASE + path;
+    const url = BASE + path;
 
     const res = http.get(url, {
         headers: mergeHeaders(headers, { referer: BASE + "/" }),
@@ -205,8 +216,8 @@ export default function (data) {
         expectedStatuses: [200, 301, 302, 304, 307, 308, 404],
     });
 
-    const duration     = res.timings.duration;
-    const isSlow       = duration > 700;
+    const duration = res.timings.duration;
+    const isSlow = duration > 700;
     const isServerError = res.status >= 500;
 
     perPathTrend.add(duration, { path });
@@ -235,8 +246,8 @@ export default function (data) {
 // ─── SUMMARY EXPORT ───────────────────────────────────────────────────────────
 export function handleSummary(data) {
     return {
-        "summary.json":          JSON.stringify(data, null, 2),
-        "slow-endpoints.json":   JSON.stringify(slowMap, null, 2),
+        "summary.json": JSON.stringify(data, null, 2),
+        "slow-endpoints.json": JSON.stringify(slowMap, null, 2),
         "failed-endpoints.json": JSON.stringify(failMap, null, 2),
         "notfound-endpoints.json": JSON.stringify(notFoundMap, null, 2),
     };
@@ -246,6 +257,7 @@ export function handleSummary(data) {
 export function teardown(data) {
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log(`Test Summary  [instance ${INSTANCE}/${TOTAL_INSTANCES}]  mode: ${data.mode}`);
+    console.log(`Flags: USE_SITEMAP=${USE_SITEMAP}  USE_WORDLIST=${USE_WORDLIST}`);
     console.log("Slow Endpoints:", Object.keys(slowMap).length > 0 ? JSON.stringify(slowMap) : "None");
     console.log("Failed Endpoints:", Object.keys(failMap).length > 0 ? JSON.stringify(failMap) : "None");
     console.log("Not Found (404):", Object.keys(notFoundMap).length > 0 ? JSON.stringify(notFoundMap) : "None");
