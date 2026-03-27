@@ -91,7 +91,7 @@ export default function () {
     }
 
     // landing
-    http.get(BASE + "/", { headers, jar });
+    http.get(BASE + "/", { headers, jar, expectedStatuses: [200, 301, 302, 304, 307, 308, 404] });
 
     sleep(1 + Math.random());
 
@@ -103,6 +103,7 @@ export default function () {
         headers: mergeHeaders(headers, { referer: BASE + "/" }),
         jar,
         tags: { path: path },
+        expectedStatuses: [200, 301, 302, 304, 307, 308, 404],
     });
 
     const duration = res.timings.duration;
