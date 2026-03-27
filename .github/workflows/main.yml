@@ -35,8 +35,9 @@ jobs:
   prepare-matrix:
     runs-on: ubuntu-latest
     outputs:
-      regions_json: ${{ steps.set.outputs.regions }}
-      instances_json: ${{ steps.set.outputs.instances }}
+      regions_json:        ${{ steps.set.outputs.regions }}
+      instances_json:      ${{ steps.set.outputs.instances }}
+      total_instances:     ${{ steps.set.outputs.total_instances }}
 
     steps:
       - id: set
@@ -44,8 +45,12 @@ jobs:
           regions='["'$(echo "${{ github.event.inputs.regions }}" | sed 's/,/","/g')'"]'
           instances='["'$(echo "${{ github.event.inputs.instances }}" | sed 's/,/","/g')'"]'
 
-          echo "regions=$regions" >> $GITHUB_OUTPUT
-          echo "instances=$instances" >> $GITHUB_OUTPUT
+          # Count total instances (number of comma-separated values)
+          total=$(echo "${{ github.event.inputs.instances }}" | tr ',' '\n' | wc -l | tr -d ' ')
+
+          echo "regions=$regions"         >> $GITHUB_OUTPUT
+          echo "instances=$instances"     >> $GITHUB_OUTPUT
+          echo "total_instances=$total"   >> $GITHUB_OUTPUT
 
   load-test:
     needs: prepare-matrix
@@ -55,7 +60,7 @@ jobs:
       fail-fast: false
       max-parallel: 8
       matrix:
-        region: ${{ fromJson(needs.prepare-matrix.outputs.regions_json) }}
+        region:   ${{ fromJson(needs.prepare-matrix.outputs.regions_json) }}
         instance: ${{ fromJson(needs.prepare-matrix.outputs.instances_json) }}
 
     steps:
@@ -83,6 +88,8 @@ jobs:
             -e TARGET_URL=${{ github.event.inputs.target_url }} \
             -e VUS=${{ github.event.inputs.vus }} \
             -e DURATION=${{ github.event.inputs.duration }} \
+            -e INSTANCE=${{ matrix.instance }} \
+            -e TOTAL_INSTANCES=${{ needs.prepare-matrix.outputs.total_instances }} \
             --summary-export=summary-${{ matrix.region }}-${{ matrix.instance }}.json \
             --out json=raw-${{ matrix.region }}-${{ matrix.instance }}.json \
             script.js
@@ -109,10 +116,8 @@ jobs:
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y jq bc
 
-      # ✅ FIX PERMISSION ISSUE
       - name: Make script executable
         run: chmod +x .github/scripts/k6-aggregate.sh
 
-      # ✅ SAFE EXECUTION
       - name: Run aggregation
         run: bash .github/scripts/k6-aggregate.sh results
