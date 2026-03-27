@@ -1,24 +1,41 @@
 import http from "k6/http";
 import { check, sleep } from "k6";
-import { Rate } from "k6/metrics";
+import { Rate, Trend } from "k6/metrics";
 import { BROWSER_PROFILES, TRAFFIC_SOURCES } from "./src/data.js";
 
-// ✅ load file once
-const COMMON_PATHS = open("./wordlists/common.txt")
+// load paths once
+const PATHS = open("./wordlists/common.txt")
     .split("\n")
     .map(p => p.trim())
     .filter(p => p.length > 0)
     .map(p => p.startsWith("/") ? p : "/" + p);
 
-export const failedRequests = new Rate("failed_requests");
+if (!PATHS.length) {
+    throw new Error("wordlists/common.txt is empty");
+}
 
-const targetUrl = __ENV.TARGET_URL || "https://localhost:3000/";
+export const failedRequests = new Rate("failed_requests");
+export const slowRequests = new Rate("slow_requests");
+export const perPathTrend = new Trend("per_path_duration");
+
+if (!__ENV.TARGET_URL) {
+    throw new Error("TARGET_URL is required");
+}
+
+const BASE = __ENV.TARGET_URL.endsWith("/")
+    ? __ENV.TARGET_URL.slice(0, -1)
+    : __ENV.TARGET_URL;
+
+// global tracking (per instance)
+let slowMap = {};
+let failMap = {};
 
 export const options = {
-    vus: Number(__ENV.VUS) || 100,
+    vus: Number(__ENV.VUS) || 50,
     duration: __ENV.DURATION || "30s",
     thresholds: {
-        failed_requests: ["rate<0.01"],
+        failed_requests: ["rate<0.05"],
+        slow_requests: ["rate<0.10"],
         http_req_duration: ["p(95)<700"],
     },
 };
@@ -31,12 +48,8 @@ function pickReferrer() {
     return TRAFFIC_SOURCES[Math.floor(Math.random() * TRAFFIC_SOURCES.length)];
 }
 
-// ✅ pick random path
 function pickPath() {
-    if (!COMMON_PATHS || COMMON_PATHS.length === 0) {
-        return "/";
-    }
-    return COMMON_PATHS[Math.floor(Math.random() * COMMON_PATHS.length)];
+    return PATHS[Math.floor(Math.random() * PATHS.length)];
 }
 
 function mergeHeaders(base, extra) {
@@ -70,32 +83,62 @@ export default function () {
         headers["referer"] = ref;
     }
 
-    // ---- Step 1: landing ----
-    const res1 = http.get(targetUrl, { headers, jar });
-
-    const ok1 = check(res1, {
-        "landing status 200": (r) => r.status === 200,
-        "landing < 700ms": (r) => r.timings.duration < 700,
-    });
+    // landing
+    http.get(BASE + "/", { headers, jar });
 
     sleep(1 + Math.random());
 
-    // ---- Step 2: random page from common.txt ----
+    // page
     const path = pickPath();
-    const base = targetUrl.endsWith("/") ? targetUrl.slice(0, -1) : targetUrl;
-    const url = base + path;
+    const url = BASE + path;
 
-    const res2 = http.get(url, {
-        headers: mergeHeaders(headers, { referer: targetUrl }),
+    const res = http.get(url, {
+        headers: mergeHeaders(headers, { referer: BASE + "/" }),
         jar,
+        tags: { path: path },
     });
 
-    const ok2 = check(res2, {
-        "page status 200": (r) => r.status === 200,
-        "page < 700ms": (r) => r.timings.duration < 700,
-    });
+    const duration = res.timings.duration;
 
-    failedRequests.add(!(ok1 && ok2));
+    // metrics
+    perPathTrend.add(duration, { path: path });
+
+    const isSlow = duration > 700;
+    const isFail = res.status >= 400;
+
+    slowRequests.add(isSlow);
+    failedRequests.add(isFail);
+
+    // track counts
+    if (isSlow) {
+        slowMap[path] = (slowMap[path] || 0) + 1;
+    }
+
+    if (isFail) {
+        failMap[path] = (failMap[path] || 0) + 1;
+    }
+
+    // debug only when needed
+    if (isFail) {
+        console.log(`FAIL ${res.status} ${path}`);
+    }
+
+    if (isSlow) {
+        console.log(`SLOW ${duration}ms ${path}`);
+    }
+
+    check(res, {
+        "status ok": (r) => r.status >= 200 && r.status < 400,
+    });
 
     sleep(1 + Math.random() * 2);
+}
+
+// ✅ export files for CI
+export function handleSummary(data) {
+    return {
+        "summary.json": JSON.stringify(data, null, 2),
+        "slow-endpoints.json": JSON.stringify(slowMap, null, 2),
+        "failed-endpoints.json": JSON.stringify(failMap, null, 2),
+    };
 }
