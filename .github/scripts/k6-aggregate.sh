@@ -2,7 +2,8 @@
 
 DIR=$1
 
-FILES=$(find "$DIR" -type f -name "*.json")
+# ✅ ONLY use summary files
+FILES=$(find "$DIR" -type f -name "summary-*.json")
 
 TOTAL_REQS=0
 TOTAL_FAIL_REQS=0
@@ -17,37 +18,37 @@ TOTAL_DURATION=0
 
 for f in $FILES; do
 
-  # ✅ Correct paths for summary-export
-  REQS=$(jq -r '.metrics.http_reqs.count // 0' "$f" | head -n1 | tr -d '[:space:]')
-  FAIL_RATE=$(jq -r '.metrics.failed_requests.rate // 0' "$f" | head -n1 | tr -d '[:space:]')
-  P95=$(jq -r '.metrics.http_req_duration["p(95)"] // 0' "$f" | head -n1 | tr -d '[:space:]')
-  AVG=$(jq -r '.metrics.http_req_duration.avg // 0' "$f" | head -n1 | tr -d '[:space:]')
-
-  # Fallback safety
-  REQS=${REQS:-0}
-  FAIL_RATE=${FAIL_RATE:-0}
-  P95=${P95:-0}
-  AVG=${AVG:-0}
-
-  # Ensure numeric only
-  REQS=$(echo "$REQS" | grep -Eo '[0-9.]+' | head -n1)
-  FAIL_RATE=$(echo "$FAIL_RATE" | grep -Eo '[0-9.]+' | head -n1)
-  P95=$(echo "$P95" | grep -Eo '[0-9.]+' | head -n1)
-  AVG=$(echo "$AVG" | grep -Eo '[0-9.]+' | head -n1)
+  # Extract values (clean + simple)
+  REQS=$(jq -r '.metrics.http_reqs.count // 0' "$f")
+  FAIL_RATE=$(jq -r '.metrics.failed_requests.rate // 0' "$f")
+  P95=$(jq -r '.metrics.http_req_duration["p(95)"] // 0' "$f")
+  AVG=$(jq -r '.metrics.http_req_duration.avg // 0' "$f")
 
   REQS=${REQS:-0}
   FAIL_RATE=${FAIL_RATE:-0}
   P95=${P95:-0}
   AVG=${AVG:-0}
+
+  # Format numbers
+  REQS=$(printf "%.0f" "$REQS")
+  FAIL_RATE=$(printf "%.4f" "$FAIL_RATE")
+  P95=$(printf "%.0f" "$P95")
+  AVG=$(printf "%.0f" "$AVG")
 
   NAME=$(basename "$f")
 
+  # ✅ Correct parsing
+  # summary-region-1-2.json
   REGION=$(echo "$NAME" | cut -d'-' -f2)
   INSTANCE=$(echo "$NAME" | cut -d'-' -f3 | cut -d'.' -f1)
 
-  # Safe math
-  FAIL_REQS=$(echo "$REQS * $FAIL_RATE" | bc 2>/dev/null || echo 0)
+  # Skip empty runs
+  if [ "$REQS" -eq 0 ]; then
+    continue
+  fi
 
+  # Math
+  FAIL_REQS=$(echo "$REQS * $FAIL_RATE" | bc)
   TOTAL_REQS=$(echo "$TOTAL_REQS + $REQS" | bc)
   TOTAL_FAIL_REQS=$(echo "$TOTAL_FAIL_REQS + $FAIL_REQS" | bc)
   TOTAL_DURATION=$(echo "$TOTAL_DURATION + ($REQS * $AVG)" | bc)
