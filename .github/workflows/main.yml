@@ -70,30 +70,6 @@ jobs:
           echo "Public IP: $IP"
           echo "Region: ${{ matrix.region }} | Instance: ${{ matrix.instance }}"
 
-      - name: Prepare wordlist
-        run: |
-          mkdir -p wordlists
-
-          if [ -f wordlists/common.txt ]; then
-            cp wordlists/common.txt wordlists/base.txt
-          else
-            touch wordlists/base.txt
-          fi
-
-          BASE=${{ github.event.inputs.target_url }}
-
-          if curl -f -s "$BASE/sitemap.xml" -o sitemap.xml; then
-            grep -oP '(?<=<loc>).*?(?=</loc>)' sitemap.xml \
-              | sed "s#https\?://[^/]*##" \
-              >> wordlists/base.txt
-          fi
-
-          sort -u wordlists/base.txt > wordlists/common.txt
-
-          if [ ! -s wordlists/common.txt ]; then
-            echo "/" > wordlists/common.txt
-          fi
-
       - name: Install k6
         run: |
           K6_VER="v0.51.0"
@@ -140,45 +116,3 @@ jobs:
       # ✅ SAFE EXECUTION
       - name: Run aggregation
         run: bash .github/scripts/k6-aggregate.sh results
-
-      # ✅ AUTO CLEAN WORDLIST
-      - name: Clean wordlist
-        run: |
-          echo "Extracting bad paths..."
-
-          find results -name "notfound-endpoints.json" -exec cat {} \; 2>/dev/null \
-            | jq -s 'add // {} | keys[]' \
-            | sort -u > bad.txt
-
-          if [ ! -s bad.txt ]; then
-            echo "No bad paths"
-            exit 0
-          fi
-
-          grep -v -F -f bad.txt wordlists/common.txt > clean.txt || true
-
-          if [ ! -s clean.txt ]; then
-            echo "/" > clean.txt
-          fi
-
-          mv clean.txt wordlists/common.txt
-
-          echo "Cleaned wordlist:"
-          wc -l wordlists/common.txt
-
-      # ✅ COMMIT BACK
-      - name: Commit cleaned wordlist
-        if: github.actor != 'github-actions[bot]'
-        run: |
-          git config --global user.name "k6-bot"
-          git config --global user.email "k6-bot@users.noreply.github.com"
-
-          git add wordlists/common.txt
-
-          if git diff --cached --quiet; then
-            echo "No changes"
-            exit 0
-          fi
-
-          git commit -m "auto-clean: remove bad endpoints"
-          git push
