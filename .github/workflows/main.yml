@@ -31,26 +31,42 @@ on:
         required: false
         default: "1,2"
 
+      use_sitemap:
+        description: "Load paths from sitemap.xml if available"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+      use_wordlist:
+        description: "Use wordlists/common.txt when sitemap is absent (or disabled)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
 jobs:
   prepare-matrix:
     runs-on: ubuntu-latest
     outputs:
-      regions_json:        ${{ steps.set.outputs.regions }}
-      instances_json:      ${{ steps.set.outputs.instances }}
-      total_instances:     ${{ steps.set.outputs.total_instances }}
+      regions_json: ${{ steps.set.outputs.regions }}
+      instances_json: ${{ steps.set.outputs.instances }}
+      total_instances: ${{ steps.set.outputs.total_instances }}
 
     steps:
       - id: set
         run: |
           regions='["'$(echo "${{ github.event.inputs.regions }}" | sed 's/,/","/g')'"]'
           instances='["'$(echo "${{ github.event.inputs.instances }}" | sed 's/,/","/g')'"]'
-
-          # Count total instances (number of comma-separated values)
           total=$(echo "${{ github.event.inputs.instances }}" | tr ',' '\n' | wc -l | tr -d ' ')
 
-          echo "regions=$regions"         >> $GITHUB_OUTPUT
-          echo "instances=$instances"     >> $GITHUB_OUTPUT
-          echo "total_instances=$total"   >> $GITHUB_OUTPUT
+          echo "regions=$regions"       >> $GITHUB_OUTPUT
+          echo "instances=$instances"   >> $GITHUB_OUTPUT
+          echo "total_instances=$total" >> $GITHUB_OUTPUT
 
   load-test:
     needs: prepare-matrix
@@ -60,7 +76,7 @@ jobs:
       fail-fast: false
       max-parallel: 8
       matrix:
-        region:   ${{ fromJson(needs.prepare-matrix.outputs.regions_json) }}
+        region: ${{ fromJson(needs.prepare-matrix.outputs.regions_json) }}
         instance: ${{ fromJson(needs.prepare-matrix.outputs.instances_json) }}
 
     steps:
@@ -90,6 +106,8 @@ jobs:
             -e DURATION=${{ github.event.inputs.duration }} \
             -e INSTANCE=${{ matrix.instance }} \
             -e TOTAL_INSTANCES=${{ needs.prepare-matrix.outputs.total_instances }} \
+            -e USE_SITEMAP=${{ github.event.inputs.use_sitemap }} \
+            -e USE_WORDLIST=${{ github.event.inputs.use_wordlist }} \
             --summary-export=summary-${{ matrix.region }}-${{ matrix.instance }}.json \
             --out json=raw-${{ matrix.region }}-${{ matrix.instance }}.json \
             script.js
