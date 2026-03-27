@@ -61,38 +61,59 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Make scripts executable
-        run: chmod +x .github/scripts/*.sh
-
-      # ✅ PUBLIC IP
-      - name: Get public IP
+      - name: Public IP
         run: |
           IP=$(curl -s https://api.ipify.org)
           echo "Public IP: $IP"
           echo "Region: ${{ matrix.region }} | Instance: ${{ matrix.instance }}"
 
-      # ✅ Generate common.txt from sitemap
-      - name: Generate wordlist
+      # ✅ Wordlist handling (SAFE)
+      - name: Prepare wordlist
         run: |
           mkdir -p wordlists
 
+          echo "Checking repo wordlist..."
+          if [ -f wordlists/common.txt ]; then
+            echo "Repo wordlist found"
+            cp wordlists/common.txt wordlists/base.txt
+          else
+            echo "No repo wordlist"
+            touch wordlists/base.txt
+          fi
+
           BASE=${{ github.event.inputs.target_url }}
 
-          curl -s "$BASE/sitemap.xml" > sitemap.xml || true
+          echo "Trying sitemap..."
+          if curl -f -s "$BASE/sitemap.xml" -o sitemap.xml; then
+            echo "Sitemap found"
 
-          grep -oP '(?<=<loc>).*?(?=</loc>)' sitemap.xml \
-            | sed "s#$BASE##" \
-            | sed 's#^$#/#' \
-            | sort -u \
-            > wordlists/common.txt
+            grep -oP '(?<=<loc>).*?(?=</loc>)' sitemap.xml \
+              | sed "s#https\?://[^/]*##" \
+              >> wordlists/base.txt
+          else
+            echo "No sitemap or blocked"
+          fi
 
-          # fallback if empty
+          sort -u wordlists/base.txt > wordlists/common.txt
+
           if [ ! -s wordlists/common.txt ]; then
+            echo "Wordlist empty, adding defaults"
             echo "/" > wordlists/common.txt
+            echo "/about" >> wordlists/common.txt
+            echo "/contact" >> wordlists/common.txt
           fi
 
           echo "Total paths:"
           wc -l wordlists/common.txt
+
+          echo "Sample paths:"
+          head -10 wordlists/common.txt
+
+      - name: Connectivity check
+        run: |
+          URL=${{ github.event.inputs.target_url }}
+          echo "Testing: $URL"
+          curl -I $URL || echo "Curl failed"
 
       - name: Install k6
         run: |
@@ -100,7 +121,7 @@ jobs:
           curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VER}/k6-${K6_VER}-linux-amd64.tar.gz" | tar -xz
           sudo mv "k6-${K6_VER}-linux-amd64/k6" /usr/local/bin/k6
 
-      - name: Run k6 test
+      - name: Run k6
         continue-on-error: true
         run: |
           k6 run \
@@ -113,17 +134,11 @@ jobs:
             --out json=raw-${{ matrix.region }}-${{ matrix.instance }}.json \
             script.js
 
-      - name: Write job summary
-        if: always()
-        run: |
-          FILE=summary-${{ matrix.region }}-${{ matrix.instance }}.json
-          .github/scripts/k6-summary.sh "$FILE" "${{ matrix.region }}" "${{ matrix.instance }}"
-
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: k6-results-${{ matrix.region }}-${{ matrix.instance }}
+          name: k6-${{ matrix.region }}-${{ matrix.instance }}
           path: |
             summary-*.json
             raw-*.json
@@ -140,14 +155,8 @@ jobs:
         with:
           path: results
 
-      - name: Debug files
-        run: find results -name "*.json"
-
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y jq bc
-
-      - name: Make scripts executable
-        run: chmod +x .github/scripts/*.sh
 
       - name: Run aggregation
         run: |
