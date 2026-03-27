@@ -2,7 +2,6 @@
 
 DIR=$1
 
-# ✅ ONLY use summary files
 FILES=$(find "$DIR" -type f -name "summary-*.json")
 
 TOTAL_REQS=0
@@ -18,7 +17,6 @@ TOTAL_DURATION=0
 
 for f in $FILES; do
 
-  # Extract values (clean + simple)
   REQS=$(jq -r '.metrics.http_reqs.count // 0' "$f")
   FAIL_RATE=$(jq -r '.metrics.failed_requests.rate // 0' "$f")
   P95=$(jq -r '.metrics.http_req_duration["p(95)"] // 0' "$f")
@@ -29,25 +27,23 @@ for f in $FILES; do
   P95=${P95:-0}
   AVG=${AVG:-0}
 
-  # Format numbers
+  # format
   REQS=$(printf "%.0f" "$REQS")
   FAIL_RATE=$(printf "%.4f" "$FAIL_RATE")
   P95=$(printf "%.0f" "$P95")
   AVG=$(printf "%.0f" "$AVG")
 
-  NAME=$(basename "$f")
+  # ✅ correct parsing
+  NAME=$(basename "$f" .json)
+  NAME=${NAME#summary-}
+  INSTANCE=${NAME##*-}
+  REGION=${NAME%-*}
 
-  # ✅ Correct parsing
-  # summary-region-1-2.json
-  REGION=$(echo "$NAME" | cut -d'-' -f2)
-  INSTANCE=$(echo "$NAME" | cut -d'-' -f3 | cut -d'.' -f1)
-
-  # Skip empty runs
+  # skip empty
   if [ "$REQS" -eq 0 ]; then
     continue
   fi
 
-  # Math
   FAIL_REQS=$(echo "$REQS * $FAIL_RATE" | bc)
   TOTAL_REQS=$(echo "$TOTAL_REQS + $REQS" | bc)
   TOTAL_FAIL_REQS=$(echo "$TOTAL_FAIL_REQS + $FAIL_REQS" | bc)
@@ -57,7 +53,6 @@ for f in $FILES; do
 
 done
 
-# Global metrics
 if [ "$TOTAL_REQS" -gt 0 ]; then
   WEIGHTED_LATENCY=$(echo "scale=2; $TOTAL_DURATION / $TOTAL_REQS" | bc)
   GLOBAL_FAIL_RATE=$(echo "scale=6; $TOTAL_FAIL_REQS / $TOTAL_REQS" | bc)

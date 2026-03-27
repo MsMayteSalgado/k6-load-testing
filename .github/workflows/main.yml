@@ -21,7 +21,7 @@ on:
       regions:
         description: "Comma-separated region labels"
         required: false
-        default: "region-1,region-2"
+        default: "us-east,eu-west"
 
       instances:
         description: "Comma-separated instance IDs"
