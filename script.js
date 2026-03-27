@@ -95,12 +95,6 @@ export default function () {
         "page < 700ms": (r) => r.timings.duration < 700,
     });
 
-    // ---- Step 3: asset ----
-    http.get(targetUrl + "/favicon.ico", {
-        headers: mergeHeaders(headers, { referer: targetUrl }),
-        jar,
-    });
-
     failedRequests.add(!(ok1 && ok2));
 
     sleep(1 + Math.random() * 2);
