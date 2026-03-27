@@ -3,25 +3,6 @@ import { check, sleep } from "k6";
 import { Rate, Trend } from "k6/metrics";
 import { BROWSER_PROFILES, TRAFFIC_SOURCES } from "./src/data.js";
 
-// load paths
-// const PATHS = open("./wordlists/common.txt")
-//     .split("\n")
-//     .map(p => p.trim())
-//     .filter(p => p.length > 0)
-//     .map(p => p.startsWith("/") ? p : "/" + p);
-
-// if (!PATHS.length) {
-//     throw new Error("wordlists/common.txt is empty");
-// }
-
-// fallback paths when common.txt is not used
-const PATHS = ["/", "/about", "/api", "/contact", "/products"];
-
-// metrics
-export const failedRequests = new Rate("failed_requests");
-export const slowRequests = new Rate("slow_requests");
-export const perPathTrend = new Trend("per_path_duration");
-
 // require target
 if (!__ENV.TARGET_URL) {
     throw new Error("TARGET_URL is required");
@@ -31,6 +12,69 @@ if (!__ENV.TARGET_URL) {
 const BASE = __ENV.TARGET_URL.endsWith("/")
     ? __ENV.TARGET_URL.slice(0, -1)
     : __ENV.TARGET_URL;
+
+// load paths dynamically from target website
+function loadPathsFromTarget() {
+    const fallbackPaths = ["/", "/about", "/api", "/contact", "/products"];
+    const paths = new Set(fallbackPaths);
+    
+    try {
+        // Try to fetch sitemap.xml
+        const sitemapRes = http.get(BASE + "/sitemap.xml", {
+            timeout: "5s",
+        });
+        
+        if (sitemapRes.status === 200) {
+            const sitemapPaths = sitemapRes.body.match(/<loc>.*?<\/loc>/g) || [];
+            sitemapPaths.forEach(loc => {
+                const url = loc.replace(/<\/?loc>/g, "");
+                const path = url.replace(/https?:\/\/[^/]*/, "");
+                if (path) paths.add(path);
+            });
+            console.log(`✓ Loaded ${sitemapPaths.length} paths from sitemap.xml`);
+        }
+    } catch (e) {
+        console.log("✗ Could not fetch sitemap.xml");
+    }
+    
+    try {
+        // Try to fetch robots.txt
+        const robotsRes = http.get(BASE + "/robots.txt", {
+            timeout: "5s",
+        });
+        
+        if (robotsRes.status === 200) {
+            const lines = robotsRes.body.split("\n");
+            let disallowCount = 0;
+            lines.forEach(line => {
+                if (line.toLowerCase().startsWith("disallow:")) {
+                    const path = line.replace(/disallow:\s*/i, "").trim();
+                    if (path && path !== "*" && path !== "/") {
+                        paths.add(path);
+                        disallowCount++;
+                    }
+                }
+            });
+            console.log(`✓ Loaded ${disallowCount} paths from robots.txt`);
+        }
+    } catch (e) {
+        console.log("✗ Could not fetch robots.txt");
+    }
+    
+    return Array.from(paths);
+}
+
+// load paths
+const PATHS = loadPathsFromTarget();
+
+if (!PATHS.length) {
+    throw new Error("No paths found from target or fallback");
+}
+
+// metrics
+export const failedRequests = new Rate("failed_requests");
+export const slowRequests = new Rate("slow_requests");
+export const perPathTrend = new Trend("per_path_duration");
 
 // tracking maps
 let slowMap = {};
