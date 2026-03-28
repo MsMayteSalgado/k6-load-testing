@@ -1,7 +1,58 @@
 import http from "k6/http";
 import { check, sleep } from "k6";
 import { Rate, Trend } from "k6/metrics";
-import { BROWSER_PROFILES, TRAFFIC_SOURCES } from "./src/data.js";
+
+// ─── SAFE DATA IMPORT WITH FALLBACKS ───────────────────────────────────────
+let BROWSER_PROFILES, TRAFFIC_SOURCES;
+
+try {
+    const data = await import("./src/data.js");
+    BROWSER_PROFILES = data.BROWSER_PROFILES;
+    TRAFFIC_SOURCES = data.TRAFFIC_SOURCES;
+} catch (e) {
+    console.warn("Failed to import src/data.js, using fallback profiles");
+    BROWSER_PROFILES = [
+        {
+            name: "chrome-default",
+            ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            hints: {},
+            mobile: false,
+            languages: "en-US,en;q=0.9",
+        },
+    ];
+    TRAFFIC_SOURCES = ["https://www.google.com/", ""];  
+}
+
+// ─── LRU CACHE IMPLEMENTATION ──────────────────────────────────────────────
+class LRUCache {
+    constructor(maxSize = 1000) {
+        this.maxSize = maxSize;
+        this.cache = new Map();
+    }
+
+    set(key, value) {
+        if (this.cache.has(key)) {
+            this.cache.delete(key);
+        }
+        this.cache.set(key, value);
+        if (this.cache.size > this.maxSize) {
+            const firstKey = this.cache.keys().next().value;
+            this.cache.delete(firstKey);
+        }
+    }
+
+    get(key) {
+        if (!this.cache.has(key)) return undefined;
+        const value = this.cache.get(key);
+        this.cache.delete(key);
+        this.cache.set(key, value);
+        return value;
+    }
+
+    clear() {
+        this.cache.clear();
+    }
+}
 
 // ─── ENV ──────────────────────────────────────────────────────────────────────
 if (!__ENV.TARGET_URL) {
@@ -15,12 +66,32 @@ const BASE = __ENV.TARGET_URL.endsWith("/")
 const INSTANCE = Number(__ENV.INSTANCE) || 1;
 const TOTAL_INSTANCES = Number(__ENV.TOTAL_INSTANCES) || 1;
 const VUS = Number(__ENV.VUS) || 50;
+const MAX_MAP_SIZE = Number(__ENV.MAX_MAP_SIZE) || 1000;
 
-// "true" string → true, anything else → false
 const USE_SITEMAP = (__ENV.USE_SITEMAP || "true") === "true";
 const USE_WORDLIST = (__ENV.USE_WORDLIST || "true") === "true";
 
-// ─── WORDLIST (init stage — open() only allowed here) ─────────────────────────
+// ─── OPTIMIZED TRACKING WITH LRU CACHES ───────────────────────────────────
+const slowMap = new LRUCache(MAX_MAP_SIZE);
+const failMap = new LRUCache(MAX_MAP_SIZE);
+const notFoundMap = new LRUCache(MAX_MAP_SIZE);
+
+// ─── CACHED INDEX ARRAYS ──────────────────────────────────────────────────
+let profileIndices = [];
+let trafficIndices = [];
+
+function initializeIndices() {
+    profileIndices = Array.from(
+        { length: BROWSER_PROFILES.length },
+        (_, i) => i
+    );
+    trafficIndices = Array.from(
+        { length: TRAFFIC_SOURCES.length },
+        (_, i) => i
+    );
+}
+
+// ─── WORDLIST (init stage — open() only allowed here) ────────────────────
 let WORDLIST_PATHS = [];
 
 if (USE_WORDLIST) {
@@ -39,7 +110,23 @@ if (USE_WORDLIST) {
     console.log("USE_WORDLIST=false — skipping wordlists/common.txt");
 }
 
-// ─── SITEMAP LOADER ───────────────────────────────────────────────────────────
+// ─── OPTIMIZED XML PARSER FOR SITEMAP ─────────────────────────────────────
+function parseSitemapXML(xmlBody) {
+    const paths = new Set();
+    const locPattern = /<loc>([^<]+)<\/loc>/g;
+    let match;
+
+    while ((match = locPattern.exec(xmlBody)) !== null) {
+        const url = match[1].trim();
+        const pathMatch = url.match(/https?:\/\/[^/]*(\/.*)?/);
+        const path = (pathMatch && pathMatch[1]) ? pathMatch[1] : "/";
+        paths.add(path);
+    }
+
+    return Array.from(paths);
+}
+
+// ─── SITEMAP LOADER ───────────────────────────────────────────────────────
 function loadSitemapPaths() {
     try {
         const res = http.get(BASE + "/sitemap.xml", { timeout: "5s" });
@@ -49,36 +136,31 @@ function loadSitemapPaths() {
             return null;
         }
 
-        const locs = res.body.match(/<loc>.*?<\/loc>/g) || [];
-        console.log(`Found ${locs.length} <loc> entries in sitemap`);
+        const paths = parseSitemapXML(res.body);
+        console.log(`Found ${paths.length} paths from sitemap`);
 
-        const paths = new Set();
-        locs.forEach((loc, i) => {
-            const url = loc.replace(/<\/?loc>/g, "").trim();
-            const m = url.match(/https?:\/\/[^/]*(\/.*)?/);
-            const path = m && m[1] ? m[1] : "/";
-            paths.add(path);
-            if (i < 5) console.log(`  [${i + 1}] ${path}`);
-        });
+        if (paths.length > 0) {
+            for (let i = 0; i < Math.min(5, paths.length); i++) {
+                console.log(`  [${i + 1}] ${paths[i]}`);
+            }
+        }
 
-        const all = Array.from(paths);
-        console.log(`✓ Sitemap: ${all.length} unique paths`);
-        return all;
+        console.log(`✓ Sitemap: ${paths.length} unique paths`);
+        return paths;
     } catch (e) {
         console.log(`✗ Sitemap fetch error: ${e}`);
         return null;
     }
 }
 
-// ─── SETUP ────────────────────────────────────────────────────────────────────
+// ─── SETUP ────────────────────────────────────────────────────────────────
 export function setup() {
+    initializeIndices();
 
-    // ── Sitemap mode ──────────────────────────────────────────────────────────
     if (USE_SITEMAP) {
         const allPaths = loadSitemapPaths();
 
         if (allPaths && allPaths.length > 0) {
-            // Slice sitemap evenly across instances
             const chunkSize = Math.ceil(allPaths.length / TOTAL_INSTANCES);
             const start = (INSTANCE - 1) * chunkSize;
             const instancePaths = allPaths.slice(start, start + chunkSize);
@@ -97,7 +179,6 @@ export function setup() {
         console.log("USE_SITEMAP=false — skipping sitemap");
     }
 
-    // ── Wordlist mode ─────────────────────────────────────────────────────────
     if (USE_WORDLIST && WORDLIST_PATHS.length > 0) {
         const effective = Math.min(WORDLIST_PATHS.length, VUS);
         console.log(
@@ -108,22 +189,16 @@ export function setup() {
         return { mode: "wordlist", paths: WORDLIST_PATHS };
     }
 
-    // ── Root fallback ─────────────────────────────────────────────────────────
     console.log("⚠ No sitemap or wordlist active — all requests will target /");
     return { mode: "root", paths: ["/"] };
 }
 
-// ─── METRICS ──────────────────────────────────────────────────────────────────
+// ─── METRICS ──────────────────────────────────────────────────────────────
 export const failedRequests = new Rate("failed_requests");
 export const slowRequests = new Rate("slow_requests");
 export const perPathTrend = new Trend("per_path_duration");
 
-// ─── TRACKING ─────────────────────────────────────────────────────────────────
-let slowMap = {};
-let failMap = {};
-let notFoundMap = {};
-
-// ─── OPTIONS ──────────────────────────────────────────────────────────────────
+// ─── OPTIONS ──────────────────────────────────────────────────────────────
 export const options = {
     vus: VUS,
     duration: __ENV.DURATION || "30s",
@@ -135,42 +210,33 @@ export const options = {
     setupTimeout: "30s",
 };
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
+// ─── OPTIMIZED HELPERS ────────────────────────────────────────────────────
+function pickRandomIndex(indices) {
+    return indices[Math.floor(Math.random() * indices.length)];
+}
+
 function pickBrowserProfile() {
-    return BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)];
+    return BROWSER_PROFILES[pickRandomIndex(profileIndices)];
 }
 
 function pickReferrer() {
-    return TRAFFIC_SOURCES[Math.floor(Math.random() * TRAFFIC_SOURCES.length)];
+    return TRAFFIC_SOURCES[pickRandomIndex(trafficIndices)];
 }
 
-/**
- * Path selection per mode:
- *
- *  sitemap  → random from this instance's slice of the sitemap
- *  wordlist → deterministic by VU index:
- *               __VU (1-based) ≤ paths.length  →  paths[__VU - 1]
- *               __VU > paths.length             →  "/"
- *  root     → always "/"
- */
 function pickPath(data) {
     if (data.mode === "sitemap") {
         return data.paths[Math.floor(Math.random() * data.paths.length)];
     }
 
     if (data.mode === "wordlist") {
-        const idx = __VU - 1; // __VU is 1-based in k6
+        const idx = __VU - 1;
         return idx < data.paths.length ? data.paths[idx] : "/";
     }
 
     return "/";
 }
 
-function mergeHeaders(base, extra) {
-    return Object.assign({}, base, extra);
-}
-
-// ─── MAIN TEST ────────────────────────────────────────────────────────────────
+// ─── MAIN TEST ────────────────────────────────────────────────────────────
 export default function (data) {
     const profile = pickBrowserProfile();
     const jar = http.cookieJar();
@@ -185,9 +251,10 @@ export default function (data) {
         "cache-control": "no-cache",
     };
 
-    for (const key in profile.hints) {
+    // Spread profile hints directly
+    Object.keys(profile.hints).forEach((key) => {
         headers[key.toLowerCase()] = profile.hints[key];
-    }
+    });
 
     if (profile.mobile) {
         headers["sec-ch-ua-mobile"] = "?1";
@@ -210,7 +277,7 @@ export default function (data) {
     const url = BASE + path;
 
     const res = http.get(url, {
-        headers: mergeHeaders(headers, { referer: BASE + "/" }),
+        headers: { ...headers, referer: BASE + "/" },
         jar,
         tags: { path },
         expectedStatuses: [200, 301, 302, 304, 307, 308, 404],
@@ -225,17 +292,20 @@ export default function (data) {
     failedRequests.add(isServerError);
 
     if (isSlow) {
-        slowMap[path] = (slowMap[path] || 0) + 1;
+        const count = (slowMap.get(path) || 0) + 1;
+        slowMap.set(path, count);
         console.log(`SLOW ${duration.toFixed(0)}ms  ${path}`);
     }
 
     if (isServerError) {
-        failMap[path] = (failMap[path] || 0) + 1;
+        const count = (failMap.get(path) || 0) + 1;
+        failMap.set(path, count);
         console.log(`SERVER ERROR ${res.status}  ${path}`);
     }
 
     if (res.status === 404) {
-        notFoundMap[path] = (notFoundMap[path] || 0) + 1;
+        const count = (notFoundMap.get(path) || 0) + 1;
+        notFoundMap.set(path, count);
     }
 
     check(res, { "status ok": (r) => r.status < 500 });
@@ -243,23 +313,36 @@ export default function (data) {
     sleep(0.5 + Math.random() * 1.5);
 }
 
-// ─── SUMMARY EXPORT ───────────────────────────────────────────────────────────
+// ─── SUMMARY EXPORT ───────────────────────────────────────────────────────
+function convertMapToObject(lruCache) {
+    const obj = {};
+    lruCache.cache.forEach((value, key) => {
+        obj[key] = value;
+    });
+    return obj;
+}
+
 export function handleSummary(data) {
     return {
         "summary.json": JSON.stringify(data, null, 2),
-        "slow-endpoints.json": JSON.stringify(slowMap, null, 2),
-        "failed-endpoints.json": JSON.stringify(failMap, null, 2),
-        "notfound-endpoints.json": JSON.stringify(notFoundMap, null, 2),
+        "slow-endpoints.json": JSON.stringify(convertMapToObject(slowMap), null, 2),
+        "failed-endpoints.json": JSON.stringify(convertMapToObject(failMap), null, 2),
+        "notfound-endpoints.json": JSON.stringify(convertMapToObject(notFoundMap), null, 2),
     };
 }
 
-// ─── TEARDOWN ─────────────────────────────────────────────────────────────────
+// ─── TEARDOWN ──────────────────────────────────────────────────────────────
 export function teardown(data) {
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log(`Test Summary  [instance ${INSTANCE}/${TOTAL_INSTANCES}]  mode: ${data.mode}`);
     console.log(`Flags: USE_SITEMAP=${USE_SITEMAP}  USE_WORDLIST=${USE_WORDLIST}`);
-    console.log("Slow Endpoints:", Object.keys(slowMap).length > 0 ? JSON.stringify(slowMap) : "None");
-    console.log("Failed Endpoints:", Object.keys(failMap).length > 0 ? JSON.stringify(failMap) : "None");
-    console.log("Not Found (404):", Object.keys(notFoundMap).length > 0 ? JSON.stringify(notFoundMap) : "None");
+    console.log("Slow Endpoints:", slowMap.cache.size > 0 ? JSON.stringify(convertMapToObject(slowMap)) : "None");
+    console.log("Failed Endpoints:", failMap.cache.size > 0 ? JSON.stringify(convertMapToObject(failMap)) : "None");
+    console.log("Not Found (404):", notFoundMap.cache.size > 0 ? JSON.stringify(convertMapToObject(notFoundMap)) : "None");
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Cleanup
+    slowMap.clear();
+    failMap.clear();
+    notFoundMap.clear();
 }
